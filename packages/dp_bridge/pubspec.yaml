@@ -1,0 +1,19 @@
+name: dp_bridge
+description: OpenRide <-> DeliveryPlatform bridge (C1 job deep links, C2 track telemetry, C3 bundle distribution). Pure Dart, zero external dependencies.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  shared:
+    path: ../shared
+  router_engine:
+    path: ../router_engine
+  nav_engine:
+    path: ../nav_engine
+  ride_core:
+    path: ../ride_core
+  maps_core:
+    path: ../maps_core
