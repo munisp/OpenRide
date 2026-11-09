@@ -1,0 +1,11 @@
+name: nav_engine
+description: OpenRide nav_engine package (pure Dart, zero external dependencies).
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  router_engine:
+    path: ../router_engine
