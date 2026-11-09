@@ -1,0 +1,17 @@
+.dart_tool/
+build/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+local.properties
+android/local.properties
+android/.gradle/
+android/key.properties
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/Flutter/ephemeral/
+ios/Runner.xcworkspace/
+*.iml
