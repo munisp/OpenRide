@@ -1,0 +1,21 @@
+name: openride_integration
+description: OpenRide end-to-end integration tests.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  shared:
+    path: packages/shared
+  router_engine:
+    path: packages/router_engine
+  maps_core:
+    path: packages/maps_core
+  nav_engine:
+    path: packages/nav_engine
+  ride_core:
+    path: packages/ride_core
+  osm_bundle_tool:
+    path: packages/osm_bundle_tool
