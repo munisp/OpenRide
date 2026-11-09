@@ -32,19 +32,32 @@ class OsmDataAdapter implements OsmLike {
 /// meta.json). Used by the CLI, by tests, and by the app (via isolates).
 Future<Map<String, Object>> buildBundle(String pbfPath, String outDir,
     {void Function(String msg)? log}) async {
-  void say(String m) {
-    if (log != null) log(m);
-  }
-
   final srcFile = File(pbfPath);
   if (!srcFile.existsSync()) {
     throw FileSystemException('input .osm.pbf not found', pbfPath);
   }
   final sourceBytes = srcFile.lengthSync();
-  Directory(outDir).createSync(recursive: true);
+
+  void say(String m) {
+    if (log != null) log(m);
+  }
 
   say('reading $pbfPath (${sourceBytes} bytes) ...');
   final osm = await readOsmPbf(pbfPath);
+  return buildBundleFromData(osm, outDir, sourceBytes: sourceBytes, log: log);
+}
+
+/// Builds the whole bundle from an already-parsed (possibly pre-filtered,
+/// e.g. by `bbox_extract.dart`) [OsmData]. [sourceBytes] is recorded in
+/// meta.json; when null the input element count is recorded instead.
+Future<Map<String, Object>> buildBundleFromData(OsmData osm, String outDir,
+    {int? sourceBytes, void Function(String msg)? log}) async {
+  void say(String m) {
+    if (log != null) log(m);
+  }
+
+  sourceBytes ??= osm.nodeCount + osm.wayCount;
+  Directory(outDir).createSync(recursive: true);
   say('parsed ${osm.nodeCount} nodes, ${osm.wayCount} ways, '
       '${osm.restrictions.length} turn restrictions');
 
