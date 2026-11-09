@@ -173,6 +173,16 @@ class BundleManifestClient {
   Future<BundleManifest> fetch(Uri manifestUrl) async =>
       BundleManifest.parse(await _getJson(manifestUrl));
 
+  /// Bundles in [manifest] whose version differs from the installed one.
+  /// [installedVersions] maps city → installed version (missing/null = not
+  /// installed → update available). Mirrors BundleDownloader.needsUpdate.
+  List<RemoteBundle> updatesAvailable(
+          BundleManifest manifest, Map<String, String?> installedVersions) =>
+      [
+        for (final b in manifest.bundles)
+          if (installedVersions[b.city] != b.version) b,
+      ];
+
   /// Default HTTP GET (dart:io); throws on non-2xx.
   static Future<String> httpGetJson(Uri url) async {
     final client = HttpClient();
