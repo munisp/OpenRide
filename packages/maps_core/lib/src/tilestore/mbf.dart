@@ -123,6 +123,10 @@ class MbfReader {
 
   int get tileCount => _keys.length;
 
+  /// All stored tile ids, in sorted (z,x,y) order. Enables iterating a
+  /// store, e.g. to merge several stores into one.
+  List<TileId> get tileIds => List.unmodifiable(_ids);
+
   /// Binary search the sorted (z,x,y) index; null when absent.
   Uint8List? getTile(TileId id) {
     final key = _keyOf(id);

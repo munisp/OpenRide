@@ -4,4 +4,6 @@
 /// CLI (`bin/build_bundle.dart`).
 library osm_bundle_tool;
 
-export 'src/bundle_build.dart' show buildBundle, OsmDataAdapter;
+export 'src/bundle_build.dart'
+    show buildBundle, buildBundleFromData, OsmDataAdapter;
+export 'src/bbox_extract.dart' show BBox, extractBbox;

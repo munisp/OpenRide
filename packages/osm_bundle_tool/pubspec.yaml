@@ -11,3 +11,5 @@ dependencies:
     path: ../router_engine
   maps_core:
     path: ../maps_core
+  nav_engine:
+    path: ../nav_engine
