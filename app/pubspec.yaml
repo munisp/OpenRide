@@ -1,0 +1,44 @@
+name: openride
+description: OpenRide — fully offline route planner, navigator and ride recorder.
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Platform plugins (see README for permission rationale).
+  geolocator: ^13.0.1
+  flutter_blue_plus: ^1.35.3
+  path_provider: ^2.1.4
+  permission_handler: ^11.3.1
+  sensors_plus: ^6.1.2
+  wakelock_plus: ^1.2.8
+  share_plus: ^10.1.2
+  file_picker: ^8.1.2
+  flutter_tts: ^4.2.0
+
+  # OpenRide engine packages (pure Dart, path deps per SPEC §9).
+  shared:
+    path: ../packages/shared
+  router_engine:
+    path: ../packages/router_engine
+  maps_core:
+    path: ../packages/maps_core
+  nav_engine:
+    path: ../packages/nav_engine
+  ride_core:
+    path: ../packages/ride_core
+  osm_bundle_tool:
+    path: ../packages/osm_bundle_tool
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
