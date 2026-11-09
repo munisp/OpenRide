@@ -2,9 +2,10 @@
 ///
 /// Wraps RouterEngine (routing), nav_engine.Navigator (turn-by-turn) and
 /// ride_core.RideRecorder (track recording) into one job-scoped session:
-/// [startJob] routes pickup → stops… → dropoff, [update] feeds GPS fixes to
-/// both navigation and recording, [finishJob] stops recording and builds the
-/// Contract C2 [TrackSummary] ready for upload.
+/// [startJob] routes current-position/pickup → stops… → dropoff, [update]
+/// feeds GPS fixes to both navigation and recording and returns a [NavEvent]
+/// (the JSON payload a host app polls/receives), [finishJob] stops recording
+/// and builds the Contract C2 [TrackSummary] ready for upload.
 library;
 
 import 'package:nav_engine/nav_engine.dart';
@@ -12,6 +13,54 @@ import 'package:ride_core/ride_core.dart';
 
 import 'job_payload.dart';
 import 'track_summary.dart';
+
+/// Navigation state snapshot delivered to the host app after each GPS fix.
+class NavEvent {
+  final double distToNextManeuverM;
+
+  /// Human-readable instruction for the next maneuver (null when none).
+  final String? instruction;
+
+  /// True when the cross-track distance exceeds the off-route threshold.
+  final bool offRoute;
+
+  /// True while a reroute attempt is in progress/just attempted.
+  final bool rerouting;
+  final double etaS;
+  final double remainingM;
+
+  const NavEvent({
+    required this.distToNextManeuverM,
+    required this.instruction,
+    required this.offRoute,
+    required this.rerouting,
+    required this.etaS,
+    required this.remainingM,
+  });
+
+  factory NavEvent.fromNavState(NavState s) => NavEvent(
+        distToNextManeuverM: s.distToNextManeuverM,
+        instruction: s.next?.instruction,
+        offRoute: s.offRouteDistM > Navigator.offRouteThresholdM,
+        rerouting: s.rerouting,
+        etaS: s.etaS,
+        remainingM: s.remainingM,
+      );
+
+  Map<String, Object?> toJson() => {
+        'distToNextManeuverM': distToNextManeuverM,
+        'instruction': instruction,
+        'offRoute': offRoute,
+        'rerouting': rerouting,
+        'etaS': etaS,
+        'remainingM': remainingM,
+      };
+
+  @override
+  String toString() =>
+      'NavEvent(${distToNextManeuverM.toStringAsFixed(0)}m to "${instruction ?? '-'}", '
+      'remaining ${remainingM.toStringAsFixed(0)}m, offRoute=$offRoute, rerouting=$rerouting)';
+}
 
 /// A job currently being navigated.
 class ActiveJob {
@@ -24,6 +73,9 @@ class ActiveJob {
 
 class JobNavigator {
   final RouterEngine engine;
+
+  /// Bundle directory backing the loaded graph (when opened via [open]).
+  final String? bundleDir;
   final DateTime Function() _clock;
   final RideRecorder Function() _recorderFactory;
 
@@ -36,24 +88,40 @@ class JobNavigator {
     RideRecorder Function()? recorderFactory,
   }) {
     final c = clock ?? (() => DateTime.now().toUtc());
-    return JobNavigator._(engine, c, recorderFactory ?? (() => RideRecorder(clock: c)));
+    return JobNavigator._(engine, null, c,
+        recorderFactory ?? (() => RideRecorder(clock: c)));
   }
 
-  JobNavigator._(this.engine, this._clock, this._recorderFactory);
+  /// Creates a RouterEngine, loads the graph from [bundleDir] (the job's
+  /// offline city bundle) and returns a ready JobNavigator.
+  static Future<JobNavigator> open(
+    String bundleDir, {
+    DateTime Function()? clock,
+    RideRecorder Function()? recorderFactory,
+  }) async {
+    final engine = createRouterEngine();
+    await engine.loadGraph(bundleDir);
+    final c = clock ?? (() => DateTime.now().toUtc());
+    return JobNavigator._(engine, bundleDir, c,
+        recorderFactory ?? (() => RideRecorder(clock: c)));
+  }
+
+  JobNavigator._(this.engine, this.bundleDir, this._clock, this._recorderFactory);
 
   ActiveJob? get activeJob => _active;
 
   /// Routes the job and starts navigation + recording.
   ///
-  /// The engine must already have a graph loaded (`loadGraph`). Throws
-  /// [StateError] when a job is already active; routing failures propagate
-  /// (e.g. [NoRouteException]) and leave no job active.
-  RouteResult startJob(JobPayload job) {
+  /// The route starts at [currentPosition] when given (typical: driver is
+  /// already en route), otherwise at the job's pickup. The engine must have a
+  /// graph loaded. Throws [StateError] when a job is already active; routing
+  /// failures propagate (e.g. [NoRouteException]) and leave no job active.
+  RouteResult startJob(JobPayload job, {GeoPoint? currentPosition}) {
     if (_active != null) {
       throw StateError('job ${_active!.payload.jobId} is already active');
     }
     final route = engine.route(RouteRequest(
-      from: job.pickup.point,
+      from: currentPosition ?? job.pickup.point,
       to: job.dropoff.point,
       via: [for (final s in job.stops) s.point],
       profile: job.profile,
@@ -67,8 +135,9 @@ class JobNavigator {
   }
 
   /// Feeds one GPS fix: recorded (Kalman-filtered) and used for navigation
-  /// state (maneuvers, off-route detection, ETA).
-  NavState update(
+  /// state (maneuvers, off-route detection, ETA). Returns the [NavEvent]
+  /// snapshot the host app consumes.
+  NavEvent update(
     GeoPoint pos, {
     double speedMps = 0.0,
     double headingDeg = 0.0,
@@ -81,7 +150,7 @@ class JobNavigator {
     }
     recorder.addGps(_clock(), pos.lat, pos.lon,
         accuracy: accuracyM, speed: speedMps);
-    return active.navigator.update(pos, speedMps, headingDeg);
+    return NavEvent.fromNavState(active.navigator.update(pos, speedMps, headingDeg));
   }
 
   /// Pauses recording (e.g. waiting at a pickup); navigation keeps running.

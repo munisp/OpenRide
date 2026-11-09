@@ -13,6 +13,8 @@ dependencies:
     path: packages/router_engine
   maps_core:
     path: packages/maps_core
+  dp_bridge:
+    path: packages/dp_bridge
   nav_engine:
     path: packages/nav_engine
   ride_core:

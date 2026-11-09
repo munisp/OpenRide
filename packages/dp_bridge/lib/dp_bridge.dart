@@ -15,3 +15,4 @@ export 'src/upload_queue.dart';
 export 'src/bundle_manifest.dart';
 export 'src/bundle_downloader.dart';
 export 'src/job_navigator.dart';
+export 'src/geo_server.dart';
