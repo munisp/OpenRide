@@ -6,7 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dp_bridge/dp_bridge.dart';
-import 'package:nav_engine/nav_engine.dart' show GeoPoint, NavState;
+import 'package:maps_core/maps_core.dart' show Geocoder, MemoryOsm, OsmLikeNode;
 import 'package:ride_core/ride_core.dart';
 import 'package:router_engine/router_engine.dart';
 import 'package:router_engine/testing/pbf_writer.dart';
@@ -371,8 +371,9 @@ Future<void> main() async {
     final dir = Directory.systemTemp.createTempSync('dpq');
     try {
       final sent = <List<String>>[];
-      final q = UploadQueue(dir.path, sender: (url, token, body) async {
-        sent.add([url.toString(), token, body]);
+      final q = UploadQueue(dir.path, sender: (url, body, token) async {
+        sent.add([url.toString(), token ?? '', body]);
+        return true;
       });
       await q.enqueue(sampleTarget(), sampleSummary());
       final r = await q.flush();
@@ -393,9 +394,9 @@ Future<void> main() async {
     try {
       final clock = FakeClock(DateTime.utc(2026, 11, 9, 14));
       var calls = 0;
-      final q = UploadQueue(dir.path, clock: clock, sender: (u, t, b) async {
+      final q = UploadQueue(dir.path, clock: clock, sender: (u, b, tk) async {
         calls++;
-        if (calls < 3) throw const HttpException('boom');
+        return calls >= 3; // fail twice (false), then succeed
       });
       await q.enqueue(sampleTarget(), sampleSummary());
       var r = await q.flush();
@@ -428,19 +429,75 @@ Future<void> main() async {
     expectEq(UploadQueue.backoffFor(30).inSeconds, 300);
     return true;
   });
-  t('C2 queue: entries older than 24h are dropped', () async {
+  t('C2 queue: entries older than 24h are dead-lettered, not sent', () async {
     final dir = Directory.systemTemp.createTempSync('dpq');
     try {
       final clock = FakeClock(DateTime.utc(2026, 11, 9, 0));
       var calls = 0;
-      final q = UploadQueue(dir.path, clock: clock, sender: (u, t, b) async {
+      final q = UploadQueue(dir.path, clock: clock, sender: (u, b, tk) async {
         calls++;
+        return true;
       });
       await q.enqueue(sampleTarget(), sampleSummary());
       clock.now = clock.now.add(const Duration(hours: 25));
       final r = await q.flush();
-      expectEq(r.dropped, 1);
+      expectEq(r.deadLettered, 1);
       expectEq(calls, 0);
+      expectEq(q.pendingCount, 0);
+      // Dead-letter file keeps the entry for inspection.
+      final dead = q.deadLetters();
+      expectEq(dead.length, 1);
+      final dl = jsonDecode(dead.first.readAsStringSync()) as Map;
+      expectEq(dl['deadReason'], 'retention-expired');
+      expectEq((dl['entry'] as Map)['token'], 'tok');
+    } finally {
+      dir.deleteSync(recursive: true);
+    }
+    return true;
+  });
+  t('C2 queue: corrupt entry quarantined, crash-recovery reload works', () async {
+    final dir = Directory.systemTemp.createTempSync('dpq');
+    try {
+      final sent = <String>[];
+      final q = UploadQueue(dir.path, sender: (u, b, tk) async {
+        sent.add(b);
+        return true;
+      });
+      await q.enqueue(sampleTarget(), sampleSummary());
+      File('${dir.path}/broken.upload.json').writeAsStringSync('{not json');
+      // Simulate crash + restart: a fresh instance over the same dir.
+      final q2 = UploadQueue(dir.path, sender: (u, b, tk) async {
+        sent.add(b);
+        return true;
+      });
+      expectEq(q2.pendingCount, 1); // corrupt file skipped, real entry intact
+      final r = await q2.flush();
+      expectEq(r.sent, 1);
+      expectEq(sent.length, 1);
+      expectEq(q2.pendingCount, 0);
+      expectEq(q2.deadLetters().length, 1); // corrupt file quarantined
+    } finally {
+      dir.deleteSync(recursive: true);
+    }
+    return true;
+  });
+  t('C2 queue: worker loop flushes until stopped', () async {
+    final dir = Directory.systemTemp.createTempSync('dpq');
+    try {
+      var sent = 0;
+      final q = UploadQueue(dir.path, sender: (u, b, tk) async {
+        sent++;
+        return true;
+      });
+      await q.enqueue(sampleTarget(), sampleSummary());
+      var passes = 0;
+      final results = await q.run(
+        interval: const Duration(milliseconds: 10),
+        shouldStop: () => ++passes >= 2,
+      );
+      expectTrue(results.isNotEmpty, 'at least one pass');
+      expectEq(results.first.sent, 1);
+      expectEq(sent, 1);
       expectEq(q.pendingCount, 0);
     } finally {
       dir.deleteSync(recursive: true);
@@ -498,6 +555,26 @@ Future<void> main() async {
         }));
     final m = await client.fetch(Uri.parse('https://dp.example.com/bundles'));
     expectEq(m.bundles.length, 0);
+    return true;
+  });
+
+  t('C3 updatesAvailable diffs installed versions', () {
+    final client = BundleManifestClient(getJson: (url) async => '');
+    final bundle = RemoteBundle(
+      city: 'lagos',
+      version: 'v2',
+      bounds: const GeoBounds(6.4, 3.2, 6.7, 3.55),
+      sizeBytes: 0,
+      files: {
+        for (final k in RemoteBundle.fileNames.keys)
+          k: BundleFileRef(
+              url: Uri.parse('https://x/lagos/$k'), sha256: 'a' * 64),
+      },
+    );
+    final m = BundleManifest([bundle]);
+    expectEq(client.updatesAvailable(m, {'lagos': 'v2'}).length, 0);
+    expectEq(client.updatesAvailable(m, {'lagos': 'v1'}).length, 1);
+    expectEq(client.updatesAvailable(m, {}).length, 1); // not installed
     return true;
   });
 
@@ -663,18 +740,33 @@ Future<void> main() async {
 
       // Walk the polyline: record + navigate. Advance the clock consistent
       // with ~5 m/s movement so the Kalman innovation gate accepts fixes.
-      NavState? state;
+      NavEvent? ev;
+      NavEvent? firstEv;
       GeoPoint? prev;
       for (final p in route.points) {
         if (prev != null) {
           now = now.add(Duration(
               milliseconds: (prev.distanceTo(p) / 5.0 * 1000).round()));
         }
-        state = jn.update(p, speedMps: 5.0, headingDeg: 45.0, accuracyM: 5.0);
+        ev = jn.update(p, speedMps: 5.0, headingDeg: 45.0, accuracyM: 5.0);
+        firstEv ??= ev;
         prev = p;
       }
-      expectTrue(state != null && state.remainingM < 100.0,
-          'should finish near destination, remaining=${state?.remainingM}');
+      expectTrue(ev != null && ev.remainingM < 100.0,
+          'should finish near destination, remaining=${ev?.remainingM}');
+      // NavEvent JSON shape is the contract with the host app.
+      final evJson = ev!.toJson();
+      expectEq(evJson.keys.toList()..sort(), [
+        'distToNextManeuverM',
+        'etaS',
+        'instruction',
+        'offRoute',
+        'remainingM',
+        'rerouting',
+      ]);
+      expectEq(evJson['offRoute'], false);
+      expectTrue(firstEv != null && firstEv.instruction is String,
+          'first event should carry the depart instruction');
 
       final summary = jn.finishJob(deviceId: 'dev-test');
       expectEq(summary.jobId, job.jobId);
@@ -686,8 +778,9 @@ Future<void> main() async {
       // The summary must be queueable + flushable end to end.
       final qdir = Directory('${tmp.path}/queue');
       final sent = <String>[];
-      final q = UploadQueue(qdir.path, sender: (u, tk, body) async {
+      final q = UploadQueue(qdir.path, sender: (u, body, tk) async {
         sent.add(body);
+        return true;
       });
       await q.enqueue(job.upload ?? sampleTarget(), summary);
       final r = await q.flush();
@@ -708,9 +801,9 @@ Future<void> main() async {
           nodes: city.nodes, ways: city.ways, relations: city.relations);
       (await buildGraphFromPbf('${tmp.path}/c.osm.pbf'))
           .serializeTo('${tmp.path}/graph.bin');
-      final engine = createRouterEngine();
-      await engine.loadGraph(tmp.path);
-      final jn = JobNavigator(engine);
+      // open() loads the bundle dir itself (the intended host-app entrypoint).
+      final jn = await JobNavigator.open(tmp.path);
+      expectEq(jn.bundleDir, tmp.path);
       final job = JobPayload.fromJson(sampleJobJson()
         ..['pickup'] = {'lat': city.lat(0, 0), 'lon': city.lon(0, 0)}
         ..['dropoff'] = {'lat': city.lat(5, 5), 'lon': city.lon(5, 5)}
@@ -723,6 +816,70 @@ Future<void> main() async {
       jn.startJob(job); // can restart after cancel
       jn.finishJob(deviceId: 'd');
     } finally {
+      tmp.deleteSync(recursive: true);
+    }
+    return true;
+  });
+
+  // --- C3: geo server (ephemeral port, real built geocoder.bin) ------------
+  t('C3 geo_server: /healthz, /search hits, JSON error codes', () async {
+    final tmp = Directory.systemTemp.createTempSync('dpgeo');
+    HttpServer? server;
+    try {
+      // Build a real geocoder.bin from a tiny in-memory OSM extract.
+      final osm = MemoryOsm(nodeList: [
+        const OsmLikeNode(1, 6.5211, 3.3730,
+            {'amenity': 'restaurant', 'name': 'Mama Put'}),
+        const OsmLikeNode(2, 6.5244, 3.3792,
+            {'place': 'city', 'name': 'Lagos'}),
+      ]);
+      Geocoder.build(osm, '${tmp.path}/geocoder.bin');
+      final geocoder = Geocoder()..open('${tmp.path}/geocoder.bin');
+
+      server = await serveGeo(geocoder, port: 0, bind: '127.0.0.1');
+      final base = 'http://127.0.0.1:${server.port}';
+
+      Future<(int, Map<String, Object?>)> getJson(String path) async {
+        final client = HttpClient();
+        try {
+          final req = await client.getUrl(Uri.parse('$base$path'));
+          final resp = await req.close();
+          final text = await resp.transform(utf8.decoder).join();
+          return (resp.statusCode, jsonDecode(text) as Map<String, Object?>);
+        } finally {
+          client.close(force: true);
+        }
+      }
+
+      final (healthCode, health) = await getJson('/healthz');
+      expectEq(healthCode, 200);
+      expectEq(health['status'], 'ok');
+
+      final (code, body) =
+          await getJson('/search?q=Mama%20Put&lat=6.521&lon=3.373');
+      expectEq(code, 200);
+      final results = body['results'] as List;
+      expectTrue(results.isNotEmpty, 'Mama Put should be found');
+      final first = results.first as Map;
+      expectEq(first['name'], 'Mama Put');
+      for (final k in ['name', 'kind', 'lat', 'lon', 'score']) {
+        expectTrue(first.containsKey(k), 'result missing $k');
+      }
+
+      final (prefixCode, prefixBody) = await getJson('/search?q=mam');
+      expectEq(prefixCode, 200);
+      expectTrue((prefixBody['results'] as List).isNotEmpty,
+          'prefix search should hit');
+
+      final (badCode, badBody) = await getJson('/search');
+      expectEq(badCode, 400);
+      expectTrue(badBody['error'] != null, '400 should carry error');
+
+      final (nfCode, nfBody) = await getJson('/nope');
+      expectEq(nfCode, 404);
+      expectTrue(nfBody['error'] != null, '404 should carry error');
+    } finally {
+      await server?.close();
       tmp.deleteSync(recursive: true);
     }
     return true;
@@ -741,4 +898,4 @@ Future<void> main() async {
 String _hexOf(List<int> bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
-Future<void> _okSender(Uri url, String token, String body) async {}
+Future<bool> _okSender(Uri url, String body, String? token) async => true;
