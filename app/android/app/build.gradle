@@ -1,0 +1,48 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    // The Flutter Gradle plugin (loaded via dev.flutter.flutter-plugin-loader
+    // in settings.gradle).
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+android {
+    namespace = "org.openride.app"
+    compileSdk = 34
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        applicationId = "org.openride.app"
+        // flutter_blue_plus + geolocator require >= 21; we target 23 per SPEC.
+        minSdk = 23
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0.0"
+    }
+
+    buildTypes {
+        release {
+            // No signing config: `flutter build apk --release` on a dev
+            // machine can add one; debug signing keeps CI-less builds simple.
+            signingConfig = signingConfigs.debug
+        }
+    }
+}
+
+dependencies {
+    // NotificationCompat / ContextCompat for RecordingService + MainActivity.
+    implementation "androidx.core:core-ktx:1.13.1"
+}
+
+flutter {
+    source = "../.."
+}
